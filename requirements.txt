@@ -1,0 +1,6 @@
+pandas
+numpy
+tqdm
+scikit-learn
+Pillow
+IPython
