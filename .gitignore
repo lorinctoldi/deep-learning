@@ -1,3 +1,24 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment files
+.env
+*.env
+venv/
+env/
+.venv/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Data folders
+/data/images/
+
+# OS-specific files
+.DS
+.DS_Store
 sam_vit_h_4b8939.pth
 .ipynb_checkpoints/
 /.venv/
