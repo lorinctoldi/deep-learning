@@ -92,7 +92,7 @@ def has_overlap(mask) -> bool:
     :param mask: 2D numpy array representing a combined mask
     :return: True if any pixel has a value >1, indicating overlap; False otherwise
     """
-    return np.any(mask > 1)
+    return np.any(mask > 1) # type: ignore
 
 
 def use_cache(func):
@@ -244,3 +244,30 @@ def keep_largest_shape(mask: np.ndarray) -> np.ndarray:
         new_mask[r, c] = 1
 
     return new_mask
+
+
+import pandas as pd
+
+def write_submission_csv(results, out_path="submission.csv"):
+    """
+    Write Kaggle-format submission CSV.
+
+    Parameters
+    ----------
+    results : list of tuples
+        Each element = (image_id, list_of_rle_strings)
+        If list_of_rle_strings is empty, one blank row is written.
+    out_path : str
+        Output CSV filename.
+    """
+    rows = []
+    for image_id, rles in results:
+        if not rles:                           # no ships
+            rows.append({"ImageId": image_id, "EncodedPixels": ""})
+        else:
+            for rle in rles:                   # one row per ship
+                rows.append({"ImageId": image_id, "EncodedPixels": rle})
+
+    df = pd.DataFrame(rows, columns=["ImageId", "EncodedPixels"])
+    df.to_csv(out_path, index=False)
+    print(f"Submission saved to {out_path} ({len(df)} rows)")
