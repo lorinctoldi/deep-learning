@@ -34,6 +34,7 @@ Images with multiple ships appear multiple times in the CSV, while an empty `Enc
 - `cache/` – Stores cached or precomputed results, such as analyzed masks or intermediate data.
 - `assets/` – Contains example figures and visualization outputs used in notebooks or reports.
 - `utils.py` - Contains utility functions used in the notebook.
+- `constants.py` - Contains constants values used in the notebook.
 - `main.ipynb` - Main file containing all logic, analysis, and description.
 - `tests/` - Contains tests for the utility functions.
 - `requirements.txt` - Lists all required Python packages.
