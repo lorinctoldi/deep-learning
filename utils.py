@@ -161,16 +161,7 @@ def get_number_of_shapes_and_sizes(grid: Sequence[Sequence[int]]) -> List[int]:
         q.append((r, c))
         size = 0
 
-        directions = [
-            (1, 0),
-            (-1, 0),
-            (0, 1),
-            (0, -1),
-            (1, 1),
-            (1, -1),
-            (-1, 1),
-            (-1, -1),
-        ]
+        directions = [(1, 0),(-1, 0),(0, 1),(0, -1),(1, 1),(1, -1),(-1, 1),(-1, -1)]
 
         while q:
             row, col = q.popleft()
