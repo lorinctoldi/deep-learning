@@ -14,7 +14,7 @@ env/
 .ipynb_checkpoints/
 
 # Data folders
-/data/images/
+/data/*
 
 # OS-specific files
 .DS
