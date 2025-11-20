@@ -1,3 +1,4 @@
+from typing import Dict, List, Any
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 import torch
 import numpy as np
@@ -18,9 +19,20 @@ mask_generator = SamAutomaticMaskGenerator(
 
 
 def sam_candidates_bgr_path(img_path: str):
-    img = cv2.imread(img_path)[:, :, ::-1]      # type: ignore # BGR→RGB
+    """
+    Given an image path, use SAM to generate masks.
     
-    cv2.imwrite("data/cache/sam_debug.png", img[:, :, ::-1])  # type: ignore # RGB→BGR
+    :param img_path: Path to the input image
+    :returns: Tuple of (image as numpy array, list of mask dicts)
+    """
+    img = cv2.imread(img_path)
+    
+    if img is None:
+        raise FileNotFoundError(f"Image not found at path: {img_path}")
+    
+    img = img[:, :, ::-1] # BGR→RGB
+    
+    cv2.imwrite("data/cache/sam_debug.png", img[:, :, ::-1])  # RGB→BGR
     
     masks = []
     
@@ -34,24 +46,39 @@ def sam_candidates_bgr_path(img_path: str):
     return img, masks
 
 
-# Remove obvious junk (cloud, shorlenine bits)
-def rule_filter(masks, H, W,
+
+def rule_filter(masks: List[Dict[str, Any]], H, W,
                 min_area_px=40,
                 max_area_ratio=0.12,
                 max_eccentricity=0.995):
-    keep = []
+    """
+    Apply heuristic rules to filter out unlikely masks, such as too big masks,
+    too small masks, or overly elongated masks.
+    
+    :param masks: List of mask dicts from SAM
+    :param H: Image height
+    :param W: Image width
+    :param min_area_px: Minimum area in percentage to full area of image to keep a mask
+    :param max_area_ratio: Maximum area in percentage to full area of image to keep a mask
+    :param max_eccentricity: Maximum eccentricity (0 to 1) to keep a mask
+    :returns: Filtered list of mask dicts
+    """
+    keep : List[Dict[str, Any]] = []
     img_area = H * W
     for m in masks:
-        seg = m['segmentation']
+        seg : np.ndarray = m['segmentation']
         area = seg.sum()
         if area < min_area_px: 
             continue
         if area > max_area_ratio * img_area:
             continue
-        # optional: eccentricity via second moments (proxy)
-        ys, xs = np.where(seg)
-        if len(xs) < 3:
+        
+        ys, xs = np.nonzero(seg)
+        if len(xs) < 3: # throw out very small mask blobs
             continue
+        
+        # we calculate the ellipsis it fits
+        # then if it is too stretched, we throw it out
         cov = np.cov(np.vstack([xs, ys]))
         eigvals, _ = np.linalg.eig(cov)
         ecc = 1 - (min(eigvals) / max(eigvals) + 1e-9)
@@ -61,7 +88,7 @@ def rule_filter(masks, H, W,
     return keep
 
 # intersection over union
-def iou(a, b):
+def iou(a : np.ndarray, b: np.ndarray) -> float:
     inter = np.logical_and(a, b).sum()
     union = np.logical_or(a, b).sum()
     return inter / union if union else 0.0
@@ -102,3 +129,39 @@ def predict_masks(img_path: str):
     cand = non_max_mask_suppression(cand, 0.8)
     cand = enforce_no_overlap(cand)
     return [m['segmentation'] for m in cand]
+
+def rle_to_mask(rle, H, W):
+    mask = np.zeros(H*W, dtype=np.uint8)
+    if rle.strip() == "":
+        return mask.reshape((H, W))
+    s = list(map(int, rle.split()))
+    for start, length in zip(s[0::2], s[1::2]):
+        mask[start-1:start-1+length] = 1
+    return mask.reshape((H, W), order='F')
+
+def evaluate_model(test_csv_path : str, img_root: str):
+    gt_data : Dict[str, str] = {}
+    
+    with open(test_csv_path, "r") as f:
+        next(f)  # skip header
+        for line in f:
+            parts = line.strip().split(",")
+            img_id = parts[0]
+            rle = parts[1]
+            gt_data[img_id] = rle
+            
+    # todo : continue evaluation pipeline
+
+def compute_iou_matrix(g : List[np.ndarray], p: List[np.ndarray]) -> np.ndarray:
+    """
+    Compute IoU matrix between ground truth masks and predicted masks.
+    
+    :param g: List of ground truth masks (2D numpy arrays)
+    :param p: List of predicted masks (2D numpy arrays)
+    :returns: IoU matrix of shape (len(g), len(p))
+    """
+    iou_matrix = np.zeros((len(g), len(p)), dtype=np.float32)
+    for i, gm in enumerate(g):
+        for j, pm in enumerate(p):
+            iou_matrix[i, j] = iou(gm, pm)
+    return iou_matrix
