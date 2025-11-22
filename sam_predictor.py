@@ -1,10 +1,15 @@
-from typing import Dict, List, Any
+from pathlib import Path
+from typing import Dict, Generator, Iterator, List, Any
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
-import torch
+import pandas as pd
 import numpy as np
+import joblib
 import os
 import cv2
-import joblib
+
+from sympy import Tuple
+
+from constants import IMAGE_PATH, DataSplit
 
 DEVICE = "cuda"
 
@@ -15,10 +20,11 @@ mask_generator = SamAutomaticMaskGenerator(
     pred_iou_thresh=0.88,     # SAM’s own confidence (tune later)
     stability_score_thresh=0.92,
     crop_n_layers=0,          # 0 to keep it fast at first
+    output_mode="binary_mask"
 )
 
 
-def sam_candidates_bgr_path(img_path: str):
+def sam_candidates_bgr_path(img_path: str) -> tuple[np.ndarray, List[Dict[str, Any]]]:
     """
     Given an image path, use SAM to generate masks.
     
@@ -94,6 +100,14 @@ def iou(a : np.ndarray, b: np.ndarray) -> float:
     return inter / union if union else 0.0
 
 def non_max_mask_suppression(masks, iou_thresh=0.8, score_key='predicted_iou'):
+    """
+    Apply non-maximum suppression to masks based on IoU and a score key.
+    This removes overlapping masks, keeping the highest-scoring ones.
+    
+    :param masks: List of mask dicts from SAM
+    :param iou_thresh: IoU threshold above which to suppress masks
+    :param score_key: Key in mask dicts to use for scoring
+    """
     order = sorted(range(len(masks)), key=lambda i: masks[i][score_key], reverse=True)
     taken = []
     keep = []
@@ -108,7 +122,7 @@ def non_max_mask_suppression(masks, iou_thresh=0.8, score_key='predicted_iou'):
                 taken.append(j)
     return keep
 
-def enforce_no_overlap(masks, score_key='predicted_iou'):
+def enforce_no_overlap(masks : List[Dict[str, Any]], score_key : str ='predicted_iou'):
     # If tiny overlaps remain, give pixels to the higher-score mask
     masks_sorted = sorted(masks, key=lambda m: m[score_key], reverse=True)
     acc = np.zeros_like(masks_sorted[0]['segmentation'], dtype=np.int16)
@@ -130,7 +144,7 @@ def predict_masks(img_path: str):
     cand = enforce_no_overlap(cand)
     return [m['segmentation'] for m in cand]
 
-def rle_to_mask(rle, H, W):
+def rle_to_mask(rle, H, W) -> np.ndarray:
     mask = np.zeros(H*W, dtype=np.uint8)
     if rle.strip() == "":
         return mask.reshape((H, W))
@@ -138,6 +152,30 @@ def rle_to_mask(rle, H, W):
     for start, length in zip(s[0::2], s[1::2]):
         mask[start-1:start-1+length] = 1
     return mask.reshape((H, W), order='F')
+
+def fetch_image(img_csv_path: DataSplit) -> Iterator[tuple[np.ndarray, str]]:
+    scv_path = Path(img_csv_path.value)
+    test_df = pd.read_csv(scv_path)
+    for t in test_df.itertuples():
+        img_t = cv2.imread(f"{IMAGE_PATH}/{t.ImageId}")
+        if img_t is None:
+            raise FileNotFoundError(f"Image not found: {IMAGE_PATH}/{t.ImageId}")
+        img : np.ndarray = img_t[:, :, ::-1]  # BGR→RGB
+        encoded = str(t.EncodedPixels) if pd.notna(t.EncodedPixels) else ""
+        img_data = (img, encoded)
+        yield img_data
+        
+def evaluate_image(img_data : tuple[np.ndarray, str]) -> np.ndarray:
+    img, rle = img_data
+
+    p : List[np.ndarray] = mask_generator_pipeline(img)
+
+    g = []
+    if rle.strip() != "":
+        g.append(rle_to_mask(rle, img.shape[0], img.shape[1]))
+
+    return compute_iou_matrix(g, p)   
+    
 
 def evaluate_model(test_csv_path : str, img_root: str):
     gt_data : Dict[str, str] = {}
@@ -165,3 +203,17 @@ def compute_iou_matrix(g : List[np.ndarray], p: List[np.ndarray]) -> np.ndarray:
         for j, pm in enumerate(p):
             iou_matrix[i, j] = iou(gm, pm)
     return iou_matrix
+
+def mask_generator_pipeline(img : np.ndarray) -> List[np.ndarray]:
+    """
+    Given an image, generate masks using SAM and apply filtering.
+    
+    :param img: Input image as a numpy array
+    :returns: List of filtered mask segmentations
+    """
+    H, W = img.shape[:2]
+    masks : List[Dict[str, Any]] = mask_generator.generate(img)
+    masks = rule_filter(masks, H, W)
+    masks = non_max_mask_suppression(masks, 0.8)
+    masks = enforce_no_overlap(masks)
+    return [m['segmentation'] for m in masks]
