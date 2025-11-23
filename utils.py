@@ -3,11 +3,12 @@ import pickle
 import numpy as np
 import pandas as pd
 from collections import deque
-from typing import Sequence, List, Tuple
+from typing import Sequence, List, Tuple, Dict, Any
 from PIL import Image
 from IPython.display import display
+import cv2
 
-from constants import SHAPE, CACHE_PATH
+from constants import SHAPE, CACHE_PATH, IMAGE_PATH
 
 
 def load_masks(filter_empty: bool = False, original=False) -> pd.DataFrame:
@@ -35,6 +36,9 @@ def get_2d_mask_from_rle(rle_string: str, shape=SHAPE) -> np.ndarray:
     :param shape: Tuple of (height, width) for the output mask
     :return: 2D numpy array of 0s and 1s representing the mask
     """
+    if not rle_string or rle_string.strip() == "":
+        return np.zeros(shape, dtype=np.uint8)
+    
     rle = np.fromstring(rle_string, sep=" ", dtype=int)
     starts, lengths = rle[0::2] - 1, rle[1::2]
     ends = starts + lengths
@@ -132,133 +136,242 @@ def visualize_image_with_mask(image_id: str, mask: np.ndarray) -> None:
     display(combined)
 
 
-def get_number_of_shapes_and_sizes(grid: Sequence[Sequence[int]]) -> List[int]:
-    """
-    Compute the sizes (number of pixels) of all connected shapes in a 2D binary grid.
-
-    A shape is defined as a group of adjacent 1s in the grid.
-    In this implementation, pixels that touch horizontally, vertically, or diagonally
-    are considered connected and belong to the same shape.
-
-    Inspired by the "Counting Islands" problem on LeetCode:
-    https://leetcode.com/problems/number-of-islands/
-
-    :param grid: A 2D grid of 0s and 1s representing a binary mask
-    :return: List[int]: A list containing the size (number of pixels) of each shape
-    found in the grid
-    """
-    visited = set()
-    rows, cols = len(grid), len(grid[0])
-    sizes = []
-
-    def bfs(r: int, c: int) -> int:
-        """
-        Breadth-first search to traverse all connected pixels starting from (r, c).
-        Counts the number of pixels in the current shape.
-        """
-        q = deque()
-        visited.add((r, c))
-        q.append((r, c))
-        size = 0
-
-        directions = [(1, 0),(-1, 0),(0, 1),(0, -1),(1, 1),(1, -1),(-1, 1),(-1, -1)]
-
-        while q:
-            row, col = q.popleft()
-            size += 1
-            for dr, dc in directions:
-                nr, nc = row + dr, col + dc
-                if (
-                    0 <= nr < rows
-                    and 0 <= nc < cols
-                    and grid[nr][nc] == 1
-                    and (nr, nc) not in visited
-                ):
-                    visited.add((nr, nc))
-                    q.append((nr, nc))
-        return size
-
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r][c] == 1 and (r, c) not in visited:
-                sizes.append(bfs(r, c))
-
+def get_number_of_shapes_and_sizes(mask: np.ndarray) -> list[int]:
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    # skip label 0 (background)
+    sizes = stats[1:, cv2.CC_STAT_AREA].tolist()
     return sizes
 
-
 def keep_largest_shape(mask: np.ndarray) -> np.ndarray:
-    """
-    Keep only the largest connected shape in a 2D binary mask.
-    All smaller shapes are removed.
+    mask_uint8 = mask.astype(np.uint8)
 
-    :param mask: 2D numpy array of 0s and 1s
-    :return: new 2D mask with only the largest shape
-    """
-    visited = set()
-    rows, cols = mask.shape
-    largest_shape_size = 0
-    largest_shape_coords: List[Tuple[int, int]] = []
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_uint8, connectivity=8)
 
-    directions = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+    if num_labels <= 1:
+        return np.zeros_like(mask)
 
-    def bfs(r: int, c: int) -> List[Tuple[int, int]]:
-        q = deque()
-        q.append((r, c))
-        visited.add((r, c))
-        shape_coords = [(r, c)]
+    largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+    largest_mask = (labels == largest_label).astype(np.uint8)
 
-        while q:
-            row, col = q.popleft()
-            for dr, dc in directions:
-                nr, nc = row + dr, col + dc
-                if (
-                    0 <= nr < rows
-                    and 0 <= nc < cols
-                    and mask[nr, nc] == 1
-                    and (nr, nc) not in visited
-                ):
-                    visited.add((nr, nc))
-                    q.append((nr, nc))
-                    shape_coords.append((nr, nc))
-        return shape_coords
+    return largest_mask
 
-    for r in range(rows):
-        for c in range(cols):
-            if mask[r, c] == 1 and (r, c) not in visited:
-                coords = bfs(r, c)
-                if len(coords) > largest_shape_size:
-                    largest_shape_size = len(coords)
-                    largest_shape_coords = coords
-
-    new_mask = np.zeros_like(mask)
-    for r, c in largest_shape_coords:
-        new_mask[r, c] = 1
-
-    return new_mask
-
-
-import pandas as pd
-
-def write_submission_csv(results, out_path="submission.csv"):
+def write_submission_csv(results, out_path="submission.csv") -> None:
     """
     Write Kaggle-format submission CSV.
 
-    Parameters
-    ----------
-    results : list of tuples
-        Each element = (image_id, list_of_rle_strings)
-        If list_of_rle_strings is empty, one blank row is written.
-    out_path : str
-        Output CSV filename.
+    :param results: A list where each element is a tuple 
+        (image_id, list_of_rle_strings). If the list of RLE strings is 
+        empty, a single blank row is written for that image.
+    :param out_path: The output CSV filename.
+    :return: None
     """
     rows = []
-    for image_id, rles in results:
-        if not rles:                           # no ships
-            rows.append({"ImageId": image_id, "EncodedPixels": ""})
-        else:
-            for rle in rles:                   # one row per ship
-                rows.append({"ImageId": image_id, "EncodedPixels": rle})
+    for image_id, rle_list in results:
+        rle_list = rle_list if rle_list else [""]
+        rows.extend(
+            {"ImageId": image_id, "EncodedPixels": rle}
+            for rle in rle_list
+        )
 
     df = pd.DataFrame(rows, columns=["ImageId", "EncodedPixels"])
     df.to_csv(out_path, index=False)
     print(f"Submission saved to {out_path} ({len(df)} rows)")
+
+def get_image(img_id: str) -> np.ndarray:
+    """
+    Load an image and its ground truth masks.
+
+    :param img_id: Image filename
+    :returns: image array
+    """
+    img = cv2.imread(f"{IMAGE_PATH}/{img_id}")[:, :, ::-1]  # BGR→RGB
+    
+    if img is None:
+        raise FileNotFoundError(f"Image not found at path: {img}")
+
+    return img
+
+def split_mask_into_blobs(mask):
+    """
+    Takes a SAM mask and returns a list of single-blob binary masks.
+    """
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8), connectivity=8
+    )
+
+    blobs = []
+    for label in range(1, num_labels):  # label 0 = background
+        blob = (labels == label).astype(np.uint8)
+        blobs.append(blob)
+
+    return blobs
+
+def filter_by_min_area(mask: np.ndarray, min_area_px: int = 12) -> bool:
+    """
+    Check if a single binary mask passes the area threshold for the 'area' role.
+
+    :param mask: 2D binary mask
+    :param min_area_px: Minimum area in pixels to keep a component
+    :returns: False if mask passes the area rule, True otherwise
+    """
+    mask_area = mask.sum()
+
+    return mask_area < min_area_px
+
+def filter_by_max_ratio(mask: np.ndarray, max_ratio: float = 0.20) -> bool:
+    """
+    Check if a single binary mask passes the maximum area ratio rule.
+
+    :param mask: 2D binary mask
+    :param max_ratio: Maximum area as a fraction of total image area
+    :returns: False if mask area is below the max_ratio, True otherwise
+    """
+    mask_area = mask.sum()
+    H, W = mask.shape
+    total_area = H * W
+
+    return mask_area > (max_ratio * total_area)
+
+def filter_by_rectangularity(mask: np.ndarray, min_rectangularity_ratio: float = 0.7) -> bool:
+    """
+    Check if a binary mask is approximately rectangular.
+
+    :param mask: 2D binary mask
+    :param min_rectangularity_ratio: Minimum ratio of mask area to bounding rectangle area
+    :returns: False if mask is sufficiently rectangular, True otherwise
+    """
+    ys, xs = np.nonzero(mask)
+    
+    if len(xs) < 3 or len(ys) < 3:
+        return True  # too small to evaluate shape
+
+    # Coordinates of all points
+    points = np.vstack((xs, ys)).T.astype(np.float32)
+
+    # Minimum-area rectangle (rotated)
+    rect = cv2.minAreaRect(points)
+    width, height = rect[1]
+    rect_area = width * height
+
+    if rect_area <= 0:
+        return True
+
+    mask_area = mask.sum()
+    rectangularity_ratio = mask_area / rect_area
+
+    return rectangularity_ratio < min_rectangularity_ratio
+
+def filter_by_eccentricity(mask: np.ndarray, max_eccentricity: float = 0.995) -> bool:
+    """
+    Reject overly elongated masks using eccentricity computed from PCA/covariance.
+
+    :returns: True if mask should be rejected, False otherwise
+    """
+    ys, xs = np.nonzero(mask)
+    if len(xs) < 3:
+        return True  # too small to evaluate
+
+    # PCA via covariance
+    cov = np.cov(np.vstack([xs, ys]))
+    eigvals, _ = np.linalg.eig(cov)
+
+    # ratio of principal axes (0 = circle, 1 = line)
+    ecc = 1 - (min(eigvals) / (max(eigvals) + 1e-9))
+
+    return ecc > max_eccentricity
+
+
+def filter_mask(mask: np.ndarray,
+                min_area_px: int = 40,
+                max_area_ratio: float = 0.12,
+                min_rectangularity_ratio: float = 0.6) -> bool:
+    """
+    Apply all mask filters in a pipeline for a single mask.
+    
+    Calls:
+        - filter_by_max_ratio
+        - filter_by_min_area
+        - filter_by_rectangularity
+        - filter_by_eccentricity
+
+    :param mask: 2D binary mask
+    :returns: False if mask passes all filters, True otherwise
+    """
+    if filter_by_max_ratio(mask, max_ratio=max_area_ratio):
+        return True
+    
+    if filter_by_min_area(mask, min_area_px=min_area_px):
+        return True
+    
+    # if filter_by_rectangularity(mask, min_rectangularity_ratio=min_rectangularity_ratio):
+    #     return True
+    
+    if filter_by_eccentricity(mask):
+        return True
+    
+    return False
+
+def intersection_over_union(a : np.ndarray, b: np.ndarray) -> float:
+    inter = np.logical_and(a, b).sum()
+    union = np.logical_or(a, b).sum()
+    return inter / union if union else 0.0
+
+def iou_validation(g : List[np.ndarray], p: List[np.ndarray]) -> np.ndarray:
+    """
+    Compute IoU matrix between ground truth masks and predicted masks.
+    
+    :param g: List of ground truth masks (2D numpy arrays)
+    :param p: List of predicted masks (2D numpy arrays)
+    :returns: IoU matrix of shape (len(g), len(p))
+    """
+    iou_matrix = np.zeros((len(g), len(p)), dtype=np.float32)
+    for i, gm in enumerate(g):
+        for j, pm in enumerate(p):
+            iou_matrix[i, j] = intersection_over_union(gm, pm)
+    return iou_matrix
+
+def non_max_mask_suppression(masks, iou_thresh=0.8, score_key='predicted_iou'):
+    """
+    Apply non-maximum suppression to masks based on IoU and a score key.
+    This removes overlapping masks, keeping the highest-scoring ones.
+    
+    :param masks: List of mask dicts from SAM
+    :param iou_thresh: IoU threshold above which to suppress masks
+    :param score_key: Key in mask dicts to use for scoring
+    """
+    masks_sorted = sorted(masks, key=lambda m: m[score_key], reverse=True)
+    keep = []
+
+    while masks_sorted:
+        current = masks_sorted.pop(0)
+        keep.append(current)
+
+        masks_sorted = [
+            m for m in masks_sorted
+            if intersection_over_union(current['segmentation'], m['segmentation']) <= iou_thresh
+        ]
+
+    return keep
+
+def enforce_no_overlap(masks: list[dict], score_key: str = 'predicted_iou') -> list[dict]:
+    """
+    Remove pixel-level overlaps between masks by giving pixels to the higher-scoring mask.
+    
+    :param masks: List of mask dicts with 'segmentation' keys
+    :param score_key: Key in mask dicts used to sort by score
+    :return: List of masks with no overlapping pixels
+    """
+    masks_sorted = sorted(masks, key=lambda m: m[score_key], reverse=True)
+    
+    occupied = np.zeros_like(masks_sorted[0]['segmentation'], dtype=bool)
+    final_masks = []
+
+    for mask in masks_sorted:
+        seg = mask['segmentation'].copy()
+        # Remove pixels already assigned
+        seg[occupied] = False
+        if seg.any():
+            final_masks.append({**mask, 'segmentation': seg})
+            occupied |= seg  # mark these pixels as taken
+
+    return final_masks
