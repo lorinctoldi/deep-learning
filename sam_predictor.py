@@ -10,6 +10,7 @@ import cv2
 from sympy import Tuple
 
 from constants import IMAGE_PATH, DataSplit
+from util.general_utils import compute_iou_matrix, iou, rle_to_mask, rles_to_masks
 
 DEVICE = "cuda"
 
@@ -94,10 +95,7 @@ def rule_filter(masks: List[Dict[str, Any]], H, W,
     return keep
 
 # intersection over union
-def iou(a : np.ndarray, b: np.ndarray) -> float:
-    inter = np.logical_and(a, b).sum()
-    union = np.logical_or(a, b).sum()
-    return inter / union if union else 0.0
+
 
 def non_max_mask_suppression(masks, iou_thresh=0.8, score_key='predicted_iou'):
     """
@@ -123,6 +121,8 @@ def non_max_mask_suppression(masks, iou_thresh=0.8, score_key='predicted_iou'):
     return keep
 
 def enforce_no_overlap(masks : List[Dict[str, Any]], score_key : str ='predicted_iou'):
+    if not masks:
+        return []
     # If tiny overlaps remain, give pixels to the higher-score mask
     masks_sorted = sorted(masks, key=lambda m: m[score_key], reverse=True)
     acc = np.zeros_like(masks_sorted[0]['segmentation'], dtype=np.int16)
@@ -144,15 +144,6 @@ def predict_masks(img_path: str):
     cand = enforce_no_overlap(cand)
     return [m['segmentation'] for m in cand]
 
-def rle_to_mask(rle, H, W) -> np.ndarray:
-    mask = np.zeros(H*W, dtype=np.uint8)
-    if rle.strip() == "":
-        return mask.reshape((H, W))
-    s = list(map(int, rle.split()))
-    for start, length in zip(s[0::2], s[1::2]):
-        mask[start-1:start-1+length] = 1
-    return mask.reshape((H, W), order='F')
-
 def fetch_image(img_csv_path: DataSplit) -> Iterator[tuple[np.ndarray, str]]:
     scv_path = Path(img_csv_path.value)
     test_df = pd.read_csv(scv_path)
@@ -165,44 +156,24 @@ def fetch_image(img_csv_path: DataSplit) -> Iterator[tuple[np.ndarray, str]]:
         img_data = (img, encoded)
         yield img_data
         
-def evaluate_image(img_data : tuple[np.ndarray, str]) -> np.ndarray:
-    img, rle = img_data
+def get_image_iou_mat(img_data : tuple[np.ndarray, list[str]]) -> np.ndarray:
+    img, rles = img_data
 
     p : List[np.ndarray] = mask_generator_pipeline(img)
 
-    g = []
-    if rle.strip() != "":
-        g.append(rle_to_mask(rle, img.shape[0], img.shape[1]))
+    g = rles_to_masks(rles, img.shape[0], img.shape[1])
 
-    return compute_iou_matrix(g, p)   
+    return compute_iou_matrix(g, p)
     
 
 def evaluate_model(test_csv_path : str, img_root: str):
-    gt_data : Dict[str, str] = {}
+    df = pd.read_csv(test_csv_path)
     
-    with open(test_csv_path, "r") as f:
-        next(f)  # skip header
-        for line in f:
-            parts = line.strip().split(",")
-            img_id = parts[0]
-            rle = parts[1]
-            gt_data[img_id] = rle
+    df.groupby('ImageId')
+    
+    
             
     # todo : continue evaluation pipeline
-
-def compute_iou_matrix(g : List[np.ndarray], p: List[np.ndarray]) -> np.ndarray:
-    """
-    Compute IoU matrix between ground truth masks and predicted masks.
-    
-    :param g: List of ground truth masks (2D numpy arrays)
-    :param p: List of predicted masks (2D numpy arrays)
-    :returns: IoU matrix of shape (len(g), len(p))
-    """
-    iou_matrix = np.zeros((len(g), len(p)), dtype=np.float32)
-    for i, gm in enumerate(g):
-        for j, pm in enumerate(p):
-            iou_matrix[i, j] = iou(gm, pm)
-    return iou_matrix
 
 def mask_generator_pipeline(img : np.ndarray) -> List[np.ndarray]:
     """
@@ -216,4 +187,4 @@ def mask_generator_pipeline(img : np.ndarray) -> List[np.ndarray]:
     masks = rule_filter(masks, H, W)
     masks = non_max_mask_suppression(masks, 0.8)
     masks = enforce_no_overlap(masks)
-    return [m['segmentation'] for m in masks]
+    return [np.asfortranarray(m['segmentation']) for m in masks]

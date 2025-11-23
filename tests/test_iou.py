@@ -1,7 +1,7 @@
 import numpy as np
 from unittest.mock import MagicMock
 
-from sam_predictor import compute_iou_matrix
+from util.general_utils import compute_iou_matrix
 
 
 def test_compute_iou_matrix_basic():
@@ -51,7 +51,7 @@ def test_compute_iou_matrix_calls_iou(monkeypatch):
     p = [np.zeros((2, 2), dtype=bool), np.ones((2, 2), dtype=bool)]
 
     mock_iou = MagicMock(return_value=0.5)
-    monkeypatch.setattr("sam_predictor.iou", mock_iou)
+    monkeypatch.setattr("util.general_utils.iou", mock_iou)
 
     result = compute_iou_matrix(g, p)
 
