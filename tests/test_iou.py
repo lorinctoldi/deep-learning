@@ -1,7 +1,7 @@
 import numpy as np
 from unittest.mock import MagicMock
 
-from util.general_utils import compute_iou_matrix
+from utils.general_utils import compute_iou_matrix
 
 
 def test_compute_iou_matrix_basic():
@@ -9,12 +9,14 @@ def test_compute_iou_matrix_basic():
     g = [np.array([[1, 0], [0, 1]], dtype=bool)]
     p = [
         np.array([[1, 0], [0, 1]], dtype=bool),  # exact same → IoU = 1
-        np.zeros((2, 2), dtype=bool)              # no overlap → IoU = 0
+        np.zeros((2, 2), dtype=bool),  # no overlap → IoU = 0
     ]
 
     result = compute_iou_matrix(g, p)
     assert result.shape == (1, 2)
-    np.testing.assert_array_almost_equal(result, np.array([[1.0, 0.0]], dtype=np.float32))
+    np.testing.assert_array_almost_equal(
+        result, np.array([[1.0, 0.0]], dtype=np.float32)
+    )
 
 
 def test_compute_iou_matrix_no_ground_truth():
@@ -51,7 +53,7 @@ def test_compute_iou_matrix_calls_iou(monkeypatch):
     p = [np.zeros((2, 2), dtype=bool), np.ones((2, 2), dtype=bool)]
 
     mock_iou = MagicMock(return_value=0.5)
-    monkeypatch.setattr("util.general_utils.iou", mock_iou)
+    monkeypatch.setattr("utils.general_utils.iou", mock_iou)
 
     result = compute_iou_matrix(g, p)
 

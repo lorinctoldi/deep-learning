@@ -1,13 +1,12 @@
 import numpy as np
-import pytest
 
-from util.general_utils import rle_to_mask  # <-- adjust import
+from utils.general_utils import get_mask_from_rle  # <-- adjust import
 
 
 def test_empty_rle_returns_zero_mask():
     H, W = 4, 5
     rle = ""
-    mask = rle_to_mask(rle, H, W)
+    mask = get_mask_from_rle(rle, (H, W))
 
     assert mask.shape == (H, W)
     assert np.all(mask == 0)
@@ -25,7 +24,7 @@ def test_single_run():
     # Positions 2,3,4 should be 1.
     H, W = 3, 3
     rle = "2 3"  # start=2, length=3
-    mask = rle_to_mask(rle, H, W)
+    mask = get_mask_from_rle(rle, (H, W))
 
     expected = np.array(
         [
@@ -52,7 +51,7 @@ def test_multiple_runs():
     #   10 2 → positions 10,11
     H, W = 4, 3
     rle = "2 2 7 1 10 2"
-    mask = rle_to_mask(rle, H, W)
+    mask = get_mask_from_rle(rle, (H, W))
 
     expected = np.array(
         [
@@ -77,7 +76,7 @@ def test_column_major_correctness():
     #
     # Activate pixels 1 and 4 → should be (0,0) and (0,1)
     rle = "1 1 4 1"
-    mask = rle_to_mask(rle, H, W)
+    mask = get_mask_from_rle(rle, (H, W))
 
     expected = np.array(
         [

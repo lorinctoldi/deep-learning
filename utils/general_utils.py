@@ -29,7 +29,7 @@ def load_masks(filter_empty: bool = False, original=False) -> pd.DataFrame:
     return masks
 
 
-def get_2d_mask_from_rle(rle_string: str, shape=SHAPE) -> np.ndarray:
+def get_mask_from_rle(rle: str | float | None, shape=SHAPE) -> np.ndarray:
     """
     Convert an RLE string to a 2D binary mask.
 
@@ -37,21 +37,23 @@ def get_2d_mask_from_rle(rle_string: str, shape=SHAPE) -> np.ndarray:
     :param shape: Tuple of (height, width) for the output mask
     :return: 2D numpy array of 0s and 1s representing the mask
     """
-    if not rle_string or rle_string.strip() == "":
-        return np.zeros(shape, dtype=np.uint8)
+    H, W = shape
 
-    rle = np.fromstring(rle_string, sep=" ", dtype=int)
-    starts, lengths = rle[0::2] - 1, rle[1::2]
-    ends = starts + lengths
+    if rle is None or (isinstance(rle, float) and np.isnan(rle)):
+        return np.zeros((H, W), dtype=np.uint8)
 
-    mask = np.zeros(shape[0] * shape[1], dtype=np.uint8)
-    for s, e in zip(starts, ends):
-        mask[s:e] = 1
+    if not isinstance(rle, str) or rle.strip() == "":
+        return np.zeros((H, W), dtype=np.uint8)
+    
+    mask = np.zeros(H * W, dtype=np.uint8)
+    if rle.strip() == "":
+        return mask.reshape((H, W))
+    s = list(map(int, rle.split()))
+    for start, length in zip(s[0::2], s[1::2]):
+        mask[start - 1 : start - 1 + length] = 1
+    return mask.reshape((H, W), order="F")
 
-    return mask.reshape(shape, order="F")
-
-
-def get_rle_from_2d_mask(mask: np.ndarray) -> str:
+def get_rle_from_mask(mask: np.ndarray) -> str:
     """
     Convert a 2D binary mask to a run-length encoded (RLE) string.
 
@@ -82,7 +84,7 @@ def rles_to_combined_mask(rle_list, shape=SHAPE):
     """
     combined_mask = np.zeros(shape, dtype=np.uint8)
     for rle in rle_list:
-        mask = get_2d_mask_from_rle(rle, shape)
+        mask = get_mask_from_rle(rle, shape)
         combined_mask += mask
     return combined_mask
 
@@ -113,7 +115,6 @@ def use_cache(func):
 
     return wrapper
 
-
 def visualize_image_with_mask(image_id: str, mask: np.ndarray) -> None:
     """
     Visualize an image with its mask overlaid.
@@ -136,17 +137,29 @@ def visualize_image_with_mask(image_id: str, mask: np.ndarray) -> None:
 
     display(combined)
 
-
 def get_number_of_shapes_and_sizes(mask: np.ndarray) -> list[int]:
+    """
+    Compute the sizes (number of pixels) of all connected shapes in a 2D binary grid.
+
+    :param grid: A 2D grid of 0s and 1s representing a binary mask
+    :return: List[int]: A list containing the size (number of pixels) of each shape
+    found in the grid
+    """
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
         mask.astype(np.uint8), connectivity=8
     )
-    # skip label 0 (background)
+
     sizes = stats[1:, cv2.CC_STAT_AREA].tolist()
     return sizes
 
-
 def keep_largest_shape(mask: np.ndarray) -> np.ndarray:
+    """
+    Keep only the largest connected shape in a 2D binary mask.
+    All smaller shapes are removed.
+
+    :param mask: 2D numpy array of 0s and 1s
+    :return: new 2D mask with only the largest shape
+    """
     mask_uint8 = mask.astype(np.uint8)
 
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
@@ -161,27 +174,6 @@ def keep_largest_shape(mask: np.ndarray) -> np.ndarray:
 
     return largest_mask
 
-
-def write_submission_csv(results, out_path="submission.csv") -> None:
-    """
-    Write Kaggle-format submission CSV.
-
-    :param results: A list where each element is a tuple
-        (image_id, list_of_rle_strings). If the list of RLE strings is
-        empty, a single blank row is written for that image.
-    :param out_path: The output CSV filename.
-    :return: None
-    """
-    rows = []
-    for image_id, rle_list in results:
-        rle_list = rle_list if rle_list else [""]
-        rows.extend({"ImageId": image_id, "EncodedPixels": rle} for rle in rle_list)
-
-    df = pd.DataFrame(rows, columns=["ImageId", "EncodedPixels"])
-    df.to_csv(out_path, index=False)
-    print(f"Submission saved to {out_path} ({len(df)} rows)")
-
-
 def get_image(img_id: str) -> np.ndarray:
     """
     Load an image and its ground truth masks.
@@ -191,13 +183,20 @@ def get_image(img_id: str) -> np.ndarray:
     """
     img = cv2.imread(f"{IMAGE_PATH}/{img_id}")
 
-    if not img:
+    if img is None:
         raise FileNotFoundError(f"Image not found at path: {IMAGE_PATH}/{img_id}")
 
     return img[:, :, ::-1]  # BGR→RGB
 
 
 def iou(a: np.ndarray, b: np.ndarray) -> float:
+    """
+    Compute the Intersection over Union (IoU) between two binary masks.
+
+    :param a: First binary mask (2D numpy array of 0/1 or bool)
+    :param b: Second binary mask (2D numpy array of 0/1 or bool)
+    :return: IoU value as a float between 0.0 and 1.0
+    """
     inter = np.logical_and(a, b).sum()
     union = np.logical_or(a, b).sum()
     return inter / union if union else 0.0
@@ -220,8 +219,7 @@ def non_max_mask_suppression(masks, iou_thresh=0.8, score_key="predicted_iou"):
         keep.append(current)
 
         masks_sorted = [
-            m
-            for m in masks_sorted
+            m for m in masks_sorted
             if iou(current["segmentation"], m["segmentation"]) <= iou_thresh
         ]
 
@@ -245,7 +243,6 @@ def enforce_no_overlap(
 
     for mask in masks_sorted:
         seg = mask["segmentation"].copy()
-        # Remove pixels already assigned
         seg[occupied] = False
         if seg.any():
             final_masks.append({**mask, "segmentation": seg})
@@ -268,59 +265,35 @@ def compute_iou_matrix(g: List[np.ndarray], p: List[np.ndarray]) -> np.ndarray:
             iou_matrix[i, j] = iou(gm, pm)
     return iou_matrix
 
-
-def rle_to_mask(rle : str | float | None, H : int, W: int) -> np.ndarray:
-     # Handle None, NaN, or float('nan') from pandas
-    if rle is None or (isinstance(rle, float) and np.isnan(rle)):
-        return np.zeros((H, W), dtype=np.uint8)
-
-    # Handle empty string masks
-    if not isinstance(rle, str) or rle.strip() == "":
-        return np.zeros((H, W), dtype=np.uint8)
-    
-    mask = np.zeros(H * W, dtype=np.uint8)
-    if rle.strip() == "":
-        return mask.reshape((H, W))
-    s = list(map(int, rle.split()))
-    for start, length in zip(s[0::2], s[1::2]):
-        mask[start - 1 : start - 1 + length] = 1
-    return mask.reshape((H, W), order="F")
-
-
-def rles_to_masks(rles: List[str], H: int, W: int) -> List[np.ndarray]:
-    """
-    Convert a list of RLE strings to a list of 2D binary masks.
-
-    :param rles: List of RLE strings
-    :param H: Height of the output masks
-    :param W: Width of the output masks
-    :return: List of 2D numpy arrays representing the masks
-    """
-    return [rle_to_mask(rle, H, W) for rle in rles]
-
 def compute_confusion_counts(iou_mat: np.ndarray, t: np.float32) -> tuple[int, int, int]:
+    """
+    Compute true positives (TP), false negatives (FN), and false positives (FP) 
+    from an IoU matrix at a given threshold.
+
+    :param iou_mat: IoU matrix of shape (num_gt, num_pred)
+    :param t: IoU threshold to consider a prediction as a match
+    :return: Tuple (TP, FN, FP)
+    """
     match_matrix = (iou_mat >= t)
     
-    # iou_mat shape is (g, p)
-    gt_matched = match_matrix.any(axis=1)  # per GT mask
-    pred_matched = match_matrix.any(axis=0)  # per predicted mask
+    gt_matched = match_matrix.any(axis=1)
+    pred_matched = match_matrix.any(axis=0)
 
     TP = gt_matched.sum()
-    FN = (~gt_matched).sum() # each unmatched gt is a false negative
-    FP = (~pred_matched).sum() # each unmatched prediction is a false positive
+    FN = (~gt_matched).sum()
+    FP = (~pred_matched).sum()
 
     return int(TP), int(FN), int(FP)
 
-def fetch_image_from_dict(img_dict: Dict[str, Any]) -> Iterator[tuple[np.ndarray, list[str]]]:
-    for img_id, rles in img_dict.items():
-        img_t = cv2.imread(f"{IMAGE_PATH}/{img_id}")
-        if img_t is None:
-            raise FileNotFoundError(f"Image not found: {IMAGE_PATH}/{img_id}")
-        img : np.ndarray = img_t[:, :, ::-1]  # BGR→RGB
-        yield (img, rles)    
+def compute_f_score(t: np.float32, iou_mat: np.ndarray, beta: float = 2.0) -> float:
+    """
+    Compute the F-score at a given IoU threshold.
 
-
-def f_score(t: np.float32, iou_mat: np.ndarray, beta: float = 2.0) -> float:
+    :param t: IoU threshold
+    :param iou_mat: IoU matrix of shape (num_gt, num_pred)
+    :param beta: Weight of recall relative to precision (default 2.0)
+    :return: F-score at threshold t
+    """
     TP, FN, FP = compute_confusion_counts(iou_mat, t)
 
     num = (1 + beta**2) * TP
@@ -328,7 +301,14 @@ def f_score(t: np.float32, iou_mat: np.ndarray, beta: float = 2.0) -> float:
 
     return num / den if den > 0 else 0.0
 
-def average_f_score_of_image(iou_mat: np.ndarray, beta: float = 2.0) -> np.float32:
+def compute_average_f_score(iou_mat: np.ndarray, beta: float = 2.0) -> np.float32:
+    """
+    Compute the average F-score across multiple IoU thresholds (0.5 to 0.95, step 0.05).
+
+    :param iou_mat: IoU matrix of shape (num_gt, num_pred)
+    :param beta: Weight of recall relative to precision (default 2.0)
+    :return: Average F-score across thresholds
+    """
     thresholds: NDArray[np.float32] = np.arange(0.5, 1.0, 0.05, dtype=np.float32)
-    f_scores = [f_score(t, iou_mat, beta) for t in thresholds]
+    f_scores = [compute_f_score(t, iou_mat, beta) for t in thresholds]
     return np.mean(f_scores)
