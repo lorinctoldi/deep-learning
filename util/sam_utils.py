@@ -1,5 +1,8 @@
+from typing import Any
 import numpy as np
 import cv2
+
+from util.general_utils import iou
 
 def split_mask_into_blobs(mask):
     """
@@ -116,7 +119,46 @@ def filter_mask(mask: np.ndarray,
     # if filter_by_rectangularity(mask, min_rectangularity_ratio=min_rectangularity_ratio):
     #     return True
     
-    if filter_by_eccentricity(mask):
-        return True
+    # if filter_by_eccentricity(mask):
+    #     return True
     
     return False
+
+def non_max_mask_suppression(masks, iou_thresh=0.8, score_key='predicted_iou'):
+    """
+    Apply non-maximum suppression to masks based on IoU and a score key.
+    This removes overlapping masks, keeping the highest-scoring ones.
+    
+    :param masks: List of mask dicts from SAM
+    :param iou_thresh: IoU threshold above which to suppress masks
+    :param score_key: Key in mask dicts to use for scoring
+    """
+    order = sorted(range(len(masks)), key=lambda i: masks[i][score_key], reverse=True)
+    taken = []
+    keep = []
+    for i in order:
+        if i in taken: 
+            continue
+        keep.append(masks[i])
+        for j in order:
+            if j in taken or j == i: 
+                continue
+            if iou(masks[i]['segmentation'], masks[j]['segmentation']) > iou_thresh:
+                taken.append(j)
+    return keep
+
+def enforce_no_overlap(masks : list[dict[str, Any]], score_key : str ='predicted_iou'):
+    if not masks:
+        return []
+    # If tiny overlaps remain, give pixels to the higher-score mask
+    masks_sorted = sorted(masks, key=lambda m: m[score_key], reverse=True)
+    acc = np.zeros_like(masks_sorted[0]['segmentation'], dtype=np.int16)
+    final = []
+    for m in masks_sorted:
+        seg = m['segmentation'].copy()
+        seg[acc > 0] = False
+        if seg.sum() == 0:
+            continue
+        final.append({**m, 'segmentation': seg})
+        acc[seg] = 1
+    return final

@@ -1,16 +1,18 @@
 from pathlib import Path
-from typing import Dict, Generator, Iterator, List, Any
+from typing import Callable, Dict, Iterator, List, Any
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 import pandas as pd
 import numpy as np
 import joblib
 import os
 import cv2
-
-from sympy import Tuple
+from tqdm import tqdm
 
 from constants import IMAGE_PATH, DataSplit
-from util.general_utils import compute_iou_matrix, iou, rle_to_mask, rles_to_masks
+from util.general_utils import average_f_score_of_image, compute_iou_matrix, enforce_no_overlap, fetch_image_from_dict, iou, non_max_mask_suppression, rle_to_mask, rles_to_masks
+from util.sam_utils import filter_mask
+from numpy.typing import NDArray
+
 
 DEVICE = "cuda"
 
@@ -52,98 +54,6 @@ def sam_candidates_bgr_path(img_path: str) -> tuple[np.ndarray, List[Dict[str, A
         joblib.dump(masks, MASK_FILE_PATH)
     return img, masks
 
-
-
-def rule_filter(masks: List[Dict[str, Any]], H, W,
-                min_area_px=40,
-                max_area_ratio=0.12,
-                max_eccentricity=0.995):
-    """
-    Apply heuristic rules to filter out unlikely masks, such as too big masks,
-    too small masks, or overly elongated masks.
-    
-    :param masks: List of mask dicts from SAM
-    :param H: Image height
-    :param W: Image width
-    :param min_area_px: Minimum area in percentage to full area of image to keep a mask
-    :param max_area_ratio: Maximum area in percentage to full area of image to keep a mask
-    :param max_eccentricity: Maximum eccentricity (0 to 1) to keep a mask
-    :returns: Filtered list of mask dicts
-    """
-    keep : List[Dict[str, Any]] = []
-    img_area = H * W
-    for m in masks:
-        seg : np.ndarray = m['segmentation']
-        area = seg.sum()
-        if area < min_area_px: 
-            continue
-        if area > max_area_ratio * img_area:
-            continue
-        
-        ys, xs = np.nonzero(seg)
-        if len(xs) < 3: # throw out very small mask blobs
-            continue
-        
-        # we calculate the ellipsis it fits
-        # then if it is too stretched, we throw it out
-        cov = np.cov(np.vstack([xs, ys]))
-        eigvals, _ = np.linalg.eig(cov)
-        ecc = 1 - (min(eigvals) / max(eigvals) + 1e-9)
-        if ecc > max_eccentricity:
-            continue
-        keep.append(m)
-    return keep
-
-# intersection over union
-
-
-def non_max_mask_suppression(masks, iou_thresh=0.8, score_key='predicted_iou'):
-    """
-    Apply non-maximum suppression to masks based on IoU and a score key.
-    This removes overlapping masks, keeping the highest-scoring ones.
-    
-    :param masks: List of mask dicts from SAM
-    :param iou_thresh: IoU threshold above which to suppress masks
-    :param score_key: Key in mask dicts to use for scoring
-    """
-    order = sorted(range(len(masks)), key=lambda i: masks[i][score_key], reverse=True)
-    taken = []
-    keep = []
-    for i in order:
-        if i in taken: 
-            continue
-        keep.append(masks[i])
-        for j in order:
-            if j in taken or j == i: 
-                continue
-            if iou(masks[i]['segmentation'], masks[j]['segmentation']) > iou_thresh:
-                taken.append(j)
-    return keep
-
-def enforce_no_overlap(masks : List[Dict[str, Any]], score_key : str ='predicted_iou'):
-    if not masks:
-        return []
-    # If tiny overlaps remain, give pixels to the higher-score mask
-    masks_sorted = sorted(masks, key=lambda m: m[score_key], reverse=True)
-    acc = np.zeros_like(masks_sorted[0]['segmentation'], dtype=np.int16)
-    final = []
-    for m in masks_sorted:
-        seg = m['segmentation'].copy()
-        seg[acc > 0] = False
-        if seg.sum() == 0:
-            continue
-        final.append({**m, 'segmentation': seg})
-        acc[seg] = 1
-    return final
-
-def predict_masks(img_path: str):
-    img, cand = sam_candidates_bgr_path(img_path)
-    H, W = img.shape[:2]
-    cand = rule_filter(cand, H, W)
-    cand = non_max_mask_suppression(cand, 0.8)
-    cand = enforce_no_overlap(cand)
-    return [m['segmentation'] for m in cand]
-
 def fetch_image(img_csv_path: DataSplit) -> Iterator[tuple[np.ndarray, str]]:
     scv_path = Path(img_csv_path.value)
     test_df = pd.read_csv(scv_path)
@@ -156,35 +66,57 @@ def fetch_image(img_csv_path: DataSplit) -> Iterator[tuple[np.ndarray, str]]:
         img_data = (img, encoded)
         yield img_data
         
-def get_image_iou_mat(img_data : tuple[np.ndarray, list[str]]) -> np.ndarray:
+def get_image_iou_mat(img_data : tuple[np.ndarray, list[str]], p : list[np.ndarray]) -> np.ndarray:
     img, rles = img_data
-
-    p : List[np.ndarray] = mask_generator_pipeline(img)
 
     g = rles_to_masks(rles, img.shape[0], img.shape[1])
 
     return compute_iou_matrix(g, p)
     
 
-def evaluate_model(test_csv_path : str, img_root: str):
-    df = pd.read_csv(test_csv_path)
-    
-    df.groupby('ImageId')
-    
-    
-            
-    # todo : continue evaluation pipeline
+def evaluate_model(segmentation_pipeline : Callable[[NDArray[np.float32]], list[NDArray[np.float32]]]) -> np.float32:
+    df = pd.read_csv("./data/segmentations.csv")
 
-def mask_generator_pipeline(img : np.ndarray) -> List[np.ndarray]:
+    rle_dict = (
+        df.groupby("ImageId")["EncodedPixels"]
+        .apply(list)
+        .to_dict()
+    )
+
+    im_ids = list(rle_dict.keys())
+    
+    rng = np.random.default_rng(42)
+
+    test_im_ids = rng.permutation(im_ids)[:100]
+
+
+    print(f"Number of test images: {len(test_im_ids)}")
+
+    test_rle_dict = {k: rle_dict[k] for k in test_im_ids}
+    
+    im_f2s : NDArray[np.float32] = np.array([], dtype=np.float32)
+
+    for img, rles in tqdm(fetch_image_from_dict(test_rle_dict), total=len(test_rle_dict)):
+        predicted = segmentation_pipeline(img)
+        iou_mat : NDArray[np.float32] = get_image_iou_mat((img, rles), predicted)
+        f2_score : np.float32 = average_f_score_of_image(iou_mat)
+        im_f2s = np.append(im_f2s, f2_score)
+        
+    return np.mean(im_f2s)
+
+def mask_generator_pipeline_sam(img : np.ndarray) -> List[np.ndarray]:
     """
     Given an image, generate masks using SAM and apply filtering.
     
     :param img: Input image as a numpy array
     :returns: List of filtered mask segmentations
     """
-    H, W = img.shape[:2]
+ 
     masks : List[Dict[str, Any]] = mask_generator.generate(img)
-    masks = rule_filter(masks, H, W)
+    mask_filter = [filter_mask(m["segmentation"]) for m in masks]
+    
+    masks = [m for m, keep in zip(masks, mask_filter) if keep]
+    
     masks = non_max_mask_suppression(masks, 0.8)
     masks = enforce_no_overlap(masks)
     return [np.asfortranarray(m['segmentation']) for m in masks]
