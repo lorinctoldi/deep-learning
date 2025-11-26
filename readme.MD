@@ -1,3 +1,11 @@
+[Open the Data Notebook in Colab](https://colab.research.google.com/github/lorinctoldi/deep-learning/blob/main/main.ipynb)
+
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/lorinctoldi/deep-learning/blob/main/main.ipynb)
+
+[Open the Model Notebook in Colab](https://colab.research.google.com/github/lorinctoldi/deep-learning/blob/main/main.ipynb)
+
+[![Open Model Notebook](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/lorinctoldi/deep-learning/blob/main/model.ipynb)
+
 **Team** - Sigmoid Squad
 
 **Members**
@@ -6,9 +14,10 @@
 - Lőrinc Toldi (DORAU5)
 
 # Project Description
-
 This project focuses on **ship detection and segmentation in satellite imagery**, based on the **Container Ship Dataset** from the [Airbus Ship Detection Challenge on Kaggle](https://www.kaggle.com/c/airbus-ship-detection).
 The dataset is designed for maritime object detection and segmentation tasks.
+
+While the original Kaggle challenge requires separate segmentation masks for each individual ship, our project simplifies the task by producing a single combined mask containing all ships in the image instead of per-ship instance masks.
 
 ## Dataset Overview
 - Source: Kaggle, Airbus Ship Detection Challenge
@@ -76,18 +85,29 @@ These files were **excluded** from the repository because they contain no annota
 
 ---
 
-# Train, Validation, and Test Split
+# Model Preperations, Training and Validation
+## Preparations
+All images and masks are resized to 256×256 and normalized for efficient training. RLE masks belonging to the same image are decoded and merged into a single binary mask using a `tf.data` pipeline.
 
-### Methodology
-The dataset is randomly partitioned into the following subsets:
-- **80%** training
-- **10%** validation
-- **10%** testing
+## Training
+A UNet architecture is used because it captures both global context and fine details in segmentation tasks. The model is trained on a balanced subset of 10,000 images (5k ship, 5k empty) to reduce bias from the heavily imbalanced original dataset. Hyperparameters were chosen after testing multiple configurations to optimize segmentation performance.
 
-- The data order is randomized prior to splitting to ensure an unbiased distribution.
-- Although initially considered, adding a column to `segmentations.csv` for subset assignment was deemed unnecessary, as splitting is handled programmatically using the **scikit-learn** library.
+## Validation
+Model performance is evaluated using IoU and F2 score, as accuracy would be misleading due to large background regions. The best checkpoint (lowest validation loss) is saved and later tested on a held-out test set.
+
+---
 
 # How to Run
-
 ## 1. Install Dependencies
-Install all required Python packages listed in `requirements.txt`.
+Install all required Python packages listed in `requirements.txt`, by running:
+`pip install -r requirements.txt`
+
+Alternatively, you can install the main dependencies individually:
+`pip install ipykernel numpy pandas scikit-learn opencv-python tensorflow gdown tqdm pillow pytest`
+
+## 2. Run the notebooks
+### 2.1. Run Data Analysis
+Open main.ipynb and run all cells to download the dataset, clean masks, and perform exploratory analysis.
+
+### 2.2. Run The Model Training and Validation
+Open model.ipynb and run all cells to train the UNet model and evaluate it on the test set.

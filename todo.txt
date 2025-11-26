@@ -1,7 +1,0 @@
-# Update README.md
-# fix branches
-# update collab links
-# clear checkpoints
-# requirements.txt
- - a tanításhoz mit kell futtani,
- - a kiértékeléshez mit kell futtatni.
