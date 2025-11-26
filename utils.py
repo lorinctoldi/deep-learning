@@ -2,12 +2,11 @@ import os
 import pickle
 import numpy as np
 import pandas as pd
-from collections import deque
-from typing import Sequence, List, Tuple
 from PIL import Image
 from IPython.display import display
+import cv2
 
-from constants import SHAPE, CACHE_PATH
+from constants import SHAPE, CACHE_PATH, IMAGE_PATH
 
 
 def load_masks(filter_empty: bool = False, original=False) -> pd.DataFrame:
@@ -27,7 +26,7 @@ def load_masks(filter_empty: bool = False, original=False) -> pd.DataFrame:
     return masks
 
 
-def get_2d_mask_from_rle(rle_string: str, shape=SHAPE) -> np.ndarray:
+def get_mask_from_rle(rle: str | float | None, shape=SHAPE) -> np.ndarray:
     """
     Convert an RLE string to a 2D binary mask.
 
@@ -35,18 +34,24 @@ def get_2d_mask_from_rle(rle_string: str, shape=SHAPE) -> np.ndarray:
     :param shape: Tuple of (height, width) for the output mask
     :return: 2D numpy array of 0s and 1s representing the mask
     """
-    rle = np.fromstring(rle_string, sep=" ", dtype=int)
-    starts, lengths = rle[0::2] - 1, rle[1::2]
-    ends = starts + lengths
+    H, W = shape
 
-    mask = np.zeros(shape[0] * shape[1], dtype=np.uint8)
-    for s, e in zip(starts, ends):
-        mask[s:e] = 1
+    if rle is None or (isinstance(rle, float) and np.isnan(rle)):
+        return np.zeros((H, W), dtype=np.uint8)
 
-    return mask.reshape(shape, order="F")
+    if not isinstance(rle, str) or rle.strip() == "":
+        return np.zeros((H, W), dtype=np.uint8)
+    
+    mask = np.zeros(H * W, dtype=np.uint8)
+    if rle.strip() == "":
+        return mask.reshape((H, W))
+    s = list(map(int, rle.split()))
+    for start, length in zip(s[0::2], s[1::2]):
+        mask[start - 1 : start - 1 + length] = 1
+    return mask.reshape((H, W), order="F")
 
 
-def get_rle_from_2d_mask(mask: np.ndarray) -> str:
+def get_rle_from_mask(mask: np.ndarray) -> str:
     """
     Convert a 2D binary mask to a run-length encoded (RLE) string.
 
@@ -77,7 +82,7 @@ def rles_to_combined_mask(rle_list, shape=SHAPE):
     """
     combined_mask = np.zeros(shape, dtype=np.uint8)
     for rle in rle_list:
-        mask = get_2d_mask_from_rle(rle, shape)
+        mask = get_mask_from_rle(rle, shape)
         combined_mask += mask
     return combined_mask
 
@@ -116,7 +121,7 @@ def visualize_image_with_mask(image_id: str, mask: np.ndarray) -> None:
     :param image_id: File name of the image
     :param mask: 2D numpy array of 0s and 1s representing the mask
     """
-    img = Image.open(f"./data/images/{image_id}").convert("RGBA")
+    img = Image.open(f"./data/images/{image_id}.jpg").convert("RGBA")
 
     if mask.shape != (img.height, img.width):
         raise ValueError(
@@ -132,57 +137,19 @@ def visualize_image_with_mask(image_id: str, mask: np.ndarray) -> None:
     display(combined)
 
 
-def get_number_of_shapes_and_sizes(grid: Sequence[Sequence[int]]) -> List[int]:
+def get_number_of_shapes_and_sizes(mask: np.ndarray) -> list[int]:
     """
     Compute the sizes (number of pixels) of all connected shapes in a 2D binary grid.
-
-    A shape is defined as a group of adjacent 1s in the grid.
-    In this implementation, pixels that touch horizontally, vertically, or diagonally
-    are considered connected and belong to the same shape.
-
-    Inspired by the "Counting Islands" problem on LeetCode:
-    https://leetcode.com/problems/number-of-islands/
 
     :param grid: A 2D grid of 0s and 1s representing a binary mask
     :return: List[int]: A list containing the size (number of pixels) of each shape
     found in the grid
     """
-    visited = set()
-    rows, cols = len(grid), len(grid[0])
-    sizes = []
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8), connectivity=8
+    )
 
-    def bfs(r: int, c: int) -> int:
-        """
-        Breadth-first search to traverse all connected pixels starting from (r, c).
-        Counts the number of pixels in the current shape.
-        """
-        q = deque()
-        visited.add((r, c))
-        q.append((r, c))
-        size = 0
-
-        directions = [(1, 0),(-1, 0),(0, 1),(0, -1),(1, 1),(1, -1),(-1, 1),(-1, -1)]
-
-        while q:
-            row, col = q.popleft()
-            size += 1
-            for dr, dc in directions:
-                nr, nc = row + dr, col + dc
-                if (
-                    0 <= nr < rows
-                    and 0 <= nc < cols
-                    and grid[nr][nc] == 1
-                    and (nr, nc) not in visited
-                ):
-                    visited.add((nr, nc))
-                    q.append((nr, nc))
-        return size
-
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r][c] == 1 and (r, c) not in visited:
-                sizes.append(bfs(r, c))
-
+    sizes = stats[1:, cv2.CC_STAT_AREA].tolist()
     return sizes
 
 
@@ -194,44 +161,31 @@ def keep_largest_shape(mask: np.ndarray) -> np.ndarray:
     :param mask: 2D numpy array of 0s and 1s
     :return: new 2D mask with only the largest shape
     """
-    visited = set()
-    rows, cols = mask.shape
-    largest_shape_size = 0
-    largest_shape_coords: List[Tuple[int, int]] = []
+    mask_uint8 = mask.astype(np.uint8)
 
-    directions = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask_uint8, connectivity=8
+    )
 
-    def bfs(r: int, c: int) -> List[Tuple[int, int]]:
-        q = deque()
-        q.append((r, c))
-        visited.add((r, c))
-        shape_coords = [(r, c)]
+    if num_labels <= 1:
+        return np.zeros_like(mask)
 
-        while q:
-            row, col = q.popleft()
-            for dr, dc in directions:
-                nr, nc = row + dr, col + dc
-                if (
-                    0 <= nr < rows
-                    and 0 <= nc < cols
-                    and mask[nr, nc] == 1
-                    and (nr, nc) not in visited
-                ):
-                    visited.add((nr, nc))
-                    q.append((nr, nc))
-                    shape_coords.append((nr, nc))
-        return shape_coords
+    largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+    largest_mask = (labels == largest_label).astype(np.uint8)
 
-    for r in range(rows):
-        for c in range(cols):
-            if mask[r, c] == 1 and (r, c) not in visited:
-                coords = bfs(r, c)
-                if len(coords) > largest_shape_size:
-                    largest_shape_size = len(coords)
-                    largest_shape_coords = coords
+    return largest_mask
 
-    new_mask = np.zeros_like(mask)
-    for r, c in largest_shape_coords:
-        new_mask[r, c] = 1
 
-    return new_mask
+def get_image(img_id: str) -> np.ndarray:
+    """
+    Load an image and its ground truth masks.
+
+    :param img_id: Image filename
+    :returns: image array
+    """
+    img = cv2.imread(f"{IMAGE_PATH}/{img_id}.jpg")
+
+    if img is None:
+        raise FileNotFoundError(f"Image not found at path: {IMAGE_PATH}/{img_id}.jpg")
+
+    return img[:, :, ::-1]
