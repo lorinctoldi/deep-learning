@@ -1,0 +1,4 @@
+- documentation for experiment models (ipynb)
+- documentation
+- powerpoint
+- 

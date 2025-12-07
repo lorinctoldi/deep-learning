@@ -8,3 +8,4 @@ gdown
 tqdm
 Pillow
 pytest
+seaborn
