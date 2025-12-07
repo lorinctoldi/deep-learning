@@ -1,4 +1,4 @@
-- documentation for experiment models (ipynb)
+- documentation for rcnn models (ipynb) (Armand)
+- documentation findings(!) for experiment models
 - documentation
 - powerpoint
-- 
