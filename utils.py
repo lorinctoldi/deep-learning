@@ -121,7 +121,7 @@ def visualize_image_with_mask(image_id: str, mask: np.ndarray) -> None:
     :param image_id: File name of the image
     :param mask: 2D numpy array of 0s and 1s representing the mask
     """
-    img = Image.open(f"./data/images/{image_id}.jpg").convert("RGBA")
+    img = Image.open(f"{IMAGE_PATH}/{image_id}.jpg").convert("RGBA")
 
     if mask.shape != (img.height, img.width):
         raise ValueError(
