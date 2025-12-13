@@ -15,6 +15,10 @@
 
 **Note**: if you are looking for our final and detailed IEEE formatted documentation, you may find the final pdf in the `/documentation` folder!
 
+# Goal in the course
+
+We are aiming for the offered grade (megajánlott jegy).
+
 # Project Description
 This project focuses on **ship detection and segmentation in satellite imagery**, based on the **Container Ship Dataset** from the [Airbus Ship Detection Challenge on Kaggle](https://www.kaggle.com/c/airbus-ship-detection).
 The dataset is designed for maritime object detection and segmentation tasks.
