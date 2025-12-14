@@ -117,3 +117,9 @@ Open main.ipynb and run all cells to download the dataset, clean masks, and perf
 
 ### 2.2. Run The Model Training and Validation
 Open model.ipynb and run all cells to train the UNet model and evaluate it on the test set.
+
+## AI usage in the project:
+
+- we asked for help in getting inspiration for training parameters
+- sometimes we used it for bug search, checking syntactical correctness
+- used it for code review to spot bugs early on
