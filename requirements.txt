@@ -1,6 +1,11 @@
-pandas
+ipykernel
 numpy
-tqdm
+pandas
 scikit-learn
+opencv-python
+tensorflow
+gdown
+tqdm
 Pillow
-IPython
+pytest
+seaborn
